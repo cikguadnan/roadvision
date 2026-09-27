@@ -1,96 +1,15 @@
-const video=document.querySelector('#camera');
-const startBtn=document.querySelector('#startBtn');
-const switchBtn=document.querySelector('#switchBtn');
-const fullscreenBtn=document.querySelector('#fullscreenBtn');
-const liveBadge=document.querySelector('#liveBadge');
-const cameraName=document.querySelector('#cameraName');
-const resolution=document.querySelector('#resolution');
-const fpsEl=document.querySelector('#fps');
-const emptyState=document.querySelector('#emptyState');
-const message=document.querySelector('#message');
-const systemStatus=document.querySelector('#systemStatus');
-
-let stream=null;
-let facingMode='environment';
-let rafId=null;
-let frames=0;
-let fpsStart=performance.now();
-
-function showMessage(text){message.textContent=text;message.hidden=false;}
-function clearMessage(){message.hidden=true;message.textContent='';}
-
-async function startCamera(){
-  clearMessage();
-  if(!navigator.mediaDevices?.getUserMedia){
-    showMessage('Camera access is not supported in this browser. Try Safari on iPhone or Chrome on Android.');
-    return;
-  }
-  try{
-    stopTracks();
-    systemStatus.textContent='Requesting camera permission…';
-    stream=await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:{ideal:facingMode},width:{ideal:1920},height:{ideal:1080}},audio:false
-    });
-    video.srcObject=stream;
-    await video.play();
-    const track=stream.getVideoTracks()[0];
-    const settings=track.getSettings();
-    cameraName.textContent=track.label|| (facingMode==='environment'?'Rear camera':'Front camera');
-    resolution.textContent=`${settings.width||video.videoWidth}×${settings.height||video.videoHeight}`;
-    liveBadge.classList.add('on');liveBadge.innerHTML='<span></span> LIVE';
-    emptyState.classList.add('hide');
-    startBtn.classList.add('stop');startBtn.querySelector('b').textContent='Stop Camera';
-    switchBtn.disabled=false;
-    systemStatus.textContent='Live video pipeline active';
-    startFpsMeter();
-  }catch(err){
-    console.error(err);
-    stopCamera();
-    let text='Could not access the camera.';
-    if(err.name==='NotAllowedError') text='Camera permission was denied. Allow camera access in your browser settings and try again.';
-    else if(err.name==='NotFoundError') text='No camera was found on this device.';
-    else if(err.name==='NotReadableError') text='The camera is busy or unavailable. Close other apps using it and try again.';
-    showMessage(text);
-    systemStatus.textContent='Camera unavailable';
-  }
-}
-
-function stopTracks(){
-  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-}
-
-function stopCamera(){
-  stopTracks();
-  video.srcObject=null;
-  cancelAnimationFrame(rafId);
-  fpsEl.textContent='0';
-  liveBadge.classList.remove('on');liveBadge.innerHTML='<span></span> OFFLINE';
-  startBtn.classList.remove('stop');startBtn.querySelector('b').textContent='Start Camera';
-  switchBtn.disabled=true;
-  cameraName.textContent='Not started';resolution.textContent='—';
-  emptyState.classList.remove('hide');
-  systemStatus.textContent='Ready for camera access';
-}
-
-function startFpsMeter(){
-  frames=0;fpsStart=performance.now();
-  const tick=(now)=>{
-    if(!stream)return;
-    frames++;
-    if(now-fpsStart>=1000){fpsEl.textContent=Math.round(frames*1000/(now-fpsStart));frames=0;fpsStart=now;}
-    rafId=requestAnimationFrame(tick);
-  };
-  rafId=requestAnimationFrame(tick);
-}
-
-startBtn.addEventListener('click',()=>stream?stopCamera():startCamera());
-switchBtn.addEventListener('click',async()=>{facingMode=facingMode==='environment'?'user':'environment';await startCamera();});
-fullscreenBtn.addEventListener('click',async()=>{
-  try{
-    if(!document.fullscreenElement) await document.documentElement.requestFullscreen?.();
-    else await document.exitFullscreen?.();
-  }catch(e){console.warn(e);}
-});
-
-video.addEventListener('loadedmetadata',()=>{if(video.videoWidth)resolution.textContent=`${video.videoWidth}×${video.videoHeight}`;});
-window.addEventListener('pagehide',stopTracks);
+const video=document.querySelector('#camera'),canvas=document.querySelector('#overlay'),ctx=canvas.getContext('2d');
+const startBtn=document.querySelector('#startBtn'),switchBtn=document.querySelector('#switchBtn'),fullscreenBtn=document.querySelector('#fullscreenBtn'),liveBadge=document.querySelector('#liveBadge'),cameraName=document.querySelector('#cameraName'),fpsEl=document.querySelector('#fps'),emptyState=document.querySelector('#emptyState'),message=document.querySelector('#message'),systemStatus=document.querySelector('#systemStatus'),detectedEl=document.querySelector('#detected'),aiState=document.querySelector('#aiState'),aiBadge=document.querySelector('#aiBadge');
+let stream=null,facingMode='environment',model=null,detecting=false,detectionTimer=null,detectFrames=0,fpsStart=performance.now();
+const VEHICLES=new Set(['car','motorcycle','bus','truck']);
+function showMessage(t){message.textContent=t;message.hidden=false}function clearMessage(){message.hidden=true;message.textContent=''}
+async function loadAI(){try{systemStatus.textContent='Loading vehicle detection model…';await tf.ready();model=await cocoSsd.load({base:'lite_mobilenet_v2'});aiState.textContent='AI ready';aiBadge.classList.add('ready');systemStatus.textContent='AI ready — start the camera'}catch(e){console.error(e);aiState.textContent='AI unavailable';showMessage('The AI model could not load. Check your internet connection and refresh the page.');systemStatus.textContent='AI model unavailable'}}
+async function startCamera(){clearMessage();if(!navigator.mediaDevices?.getUserMedia){showMessage('Camera access is not supported in this browser.');return}try{stopTracks();systemStatus.textContent='Requesting camera permission…';stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facingMode},width:{ideal:1280},height:{ideal:720}},audio:false});video.srcObject=stream;await video.play();const track=stream.getVideoTracks()[0];cameraName.textContent=track.label||(facingMode==='environment'?'Rear camera':'Front camera');liveBadge.classList.add('on');liveBadge.innerHTML='<span></span> LIVE';emptyState.classList.add('hide');startBtn.classList.add('stop');startBtn.querySelector('b').textContent='Stop Camera';switchBtn.disabled=false;systemStatus.textContent=model?'Scanning for vehicles…':'Camera live — waiting for AI model';resizeCanvas();startDetection()}catch(err){console.error(err);stopCamera();let text='Could not access the camera.';if(err.name==='NotAllowedError')text='Camera permission was denied. Allow camera access and try again.';else if(err.name==='NotFoundError')text='No camera was found on this device.';else if(err.name==='NotReadableError')text='The camera is busy or unavailable.';showMessage(text);systemStatus.textContent='Camera unavailable'}}
+function stopTracks(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}}
+function stopCamera(){detecting=false;clearTimeout(detectionTimer);stopTracks();video.srcObject=null;ctx.clearRect(0,0,canvas.width,canvas.height);fpsEl.textContent='0';detectedEl.textContent='0 vehicles';liveBadge.classList.remove('on');liveBadge.innerHTML='<span></span> OFFLINE';startBtn.classList.remove('stop');startBtn.querySelector('b').textContent='Start Camera';switchBtn.disabled=true;cameraName.textContent='Not started';emptyState.classList.remove('hide');systemStatus.textContent=model?'AI ready — start the camera':'Loading AI model…'}
+function resizeCanvas(){const r=video.getBoundingClientRect(),dpr=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);canvas.style.width=r.width+'px';canvas.style.height=r.height+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+function mapBox(box){const vw=video.videoWidth,vh=video.videoHeight,r=video.getBoundingClientRect(),scale=Math.max(r.width/vw,r.height/vh),dw=vw*scale,dh=vh*scale,ox=(r.width-dw)/2,oy=(r.height-dh)/2;return [box[0]*scale+ox,box[1]*scale+oy,box[2]*scale,box[3]*scale]}
+function draw(predictions){const r=video.getBoundingClientRect();ctx.clearRect(0,0,r.width,r.height);const vehicles=predictions.filter(p=>VEHICLES.has(p.class)&&p.score>=.42);vehicles.forEach(p=>{const [x,y,w,h]=mapBox(p.bbox),label=`${p.class.toUpperCase()}  ${Math.round(p.score*100)}%`;ctx.strokeStyle='#57f1c5';ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);ctx.font='700 12px system-ui';const tw=ctx.measureText(label).width+14;ctx.fillStyle='rgba(3,16,14,.88)';ctx.fillRect(x,Math.max(0,y-25),tw,25);ctx.fillStyle='#57f1c5';ctx.fillText(label,x+7,Math.max(17,y-8));});detectedEl.textContent=`${vehicles.length} vehicle${vehicles.length===1?'':'s'}`}
+async function detectionLoop(){if(!detecting||!stream)return;if(!model||video.readyState<2){detectionTimer=setTimeout(detectionLoop,250);return}try{const preds=await model.detect(video,20,.35);draw(preds);detectFrames++;const now=performance.now();if(now-fpsStart>=1000){fpsEl.textContent=(detectFrames*1000/(now-fpsStart)).toFixed(1);detectFrames=0;fpsStart=now}}catch(e){console.warn('Detection error',e)}detectionTimer=setTimeout(detectionLoop,80)}
+function startDetection(){detecting=true;detectFrames=0;fpsStart=performance.now();detectionLoop()}
+startBtn.addEventListener('click',()=>stream?stopCamera():startCamera());switchBtn.addEventListener('click',async()=>{facingMode=facingMode==='environment'?'user':'environment';await startCamera()});fullscreenBtn.addEventListener('click',async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen?.();else await document.exitFullscreen?.()}catch(e){console.warn(e)}});window.addEventListener('resize',()=>{if(stream)resizeCanvas()});window.addEventListener('pagehide',stopTracks);loadAI();
